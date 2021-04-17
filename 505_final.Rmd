@@ -1,0 +1,717 @@
+---
+title: "505 final project"
+author: "Bingchu Chen, Xuezhu (Gillian) Zhao"
+date: "4/25/2021"
+output: html_document
+---
+# Introduction
+This project aims to build a model for parking demand prediction for San Francisco.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r load_packages, warning = FALSE, include=FALSE}
+library(sf)
+library(lubridate)
+library(tigris)
+library(tidycensus)
+library(viridis)
+library(riem)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(readxl)
+library(gganimate)
+library(FNN)
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(RSocrata)
+library(nngeo)
+#install.packages("spatialEco")
+#library(spatialEco)
+library(sp)
+library(jtools)
+library(stringr)
+library(ggcorrplot)
+library(Hmisc)
+
+plotTheme <- function(base_size = 12) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = 14,colour = "black"),
+    plot.subtitle = element_text(face="italic"),
+    plot.caption = element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),
+    panel.grid.major = element_line("grey80", size = 0.1),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    strip.background = element_rect(fill = "grey80", color = "white"),
+    strip.text = element_text(size=12),
+    axis.title = element_text(size=12),
+    axis.text = element_text(size=10),
+    plot.background = element_blank(),
+    legend.background = element_blank(),
+    legend.title = element_text(colour = "black", face = "italic"),
+    legend.text = element_text(colour = "black", face = "italic"),
+    strip.text.x = element_text(size = 14)
+  )
+}
+
+mapTheme <- function(base_size = 12) {
+  theme(
+    text = element_text( color = "black"),
+    plot.title = element_text(size = 16,colour = "black"),
+    plot.subtitle=element_text(face="italic"),
+    plot.caption=element_text(hjust=0),
+    axis.ticks = element_blank(),
+    panel.background = element_blank(),axis.title = element_blank(),
+    axis.text = element_blank(),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    strip.text.x = element_text(size = 14))
+}
+
+nn_function <- function(measureFrom,measureTo,k) {
+  measureFrom_Matrix <- as.matrix(measureFrom)
+  measureTo_Matrix <- as.matrix(measureTo)
+  nn <-   
+    get.knnx(measureTo, measureFrom, k)$nn.dist
+  output <-
+    as.data.frame(nn) %>%
+    rownames_to_column(var = "thisPoint") %>%
+    gather(points, point_distance, V1:ncol(.)) %>%
+    arrange(as.numeric(thisPoint)) %>%
+    group_by(thisPoint) %>%
+    dplyr::summarize(pointDistance = mean(point_distance)) %>%
+    arrange(as.numeric(thisPoint)) %>%
+    dplyr::select(-thisPoint) %>%
+    pull()
+
+  return(output)  
+}
+
+#Please save these line
+## Gillian's working directory 
+setwd("G:/UPenn/CPLN505_PlaningByNumbers/Final Project/GillianParkingSF") 
+## !!Bingchu's working directory!! 
+# setwd("D:/Upenn/CPLN505/final project")
+```
+
+# Data
+## Parking meters data - Dependent Variable
+```{r load_data, cache = TRUE, include = FALSE}
+#Bingchu's data location
+#meter_loc <- st_read("D:/Upenn/CPLN505/final project/Parking_Meters.csv") 
+#parking <- read.csv("D:/Upenn/CPLN505/final project/SFMTA_Parking_Meter_Detailed_Revenue_Transactions.csv")
+
+meter_loc <- st_read("Parking_Meters.csv") 
+parking <- read.csv("SFMTA_Parking_Meter_Detailed_Revenue_Transactions.csv")
+set.seed(123)
+parkingsample <- sample_n(parking, 1000000)%>%
+  na.omit()
+
+parkingsample <- 
+  parkingsample %>%
+  mutate(interval60 = floor_date(ymd_hms(SESSION_START_DT), unit = "hour"),
+         interval15 = floor_date(ymd_hms(SESSION_START_DT), unit = "15 mins"),
+         week = week(interval60),
+         dotw = wday(interval60, label=TRUE)) %>%
+  mutate(nokeep = case_when(
+    str_detect(SESSION_START_DT, "08/02") == TRUE ~ 1,
+     str_detect(SESSION_START_DT, "08/03") == TRUE ~ 1,
+     str_detect(SESSION_START_DT, "08/04") == TRUE ~ 1)) %>%
+  filter(is.na(nokeep) == TRUE)
+
+study.panel.loc <- #by meter
+  parkingsample %>%
+  mutate(pk_Counter = 1) %>%
+  group_by(POST_ID) %>%
+  dplyr::summarize(pk_Count = sum(pk_Counter, na.rm=T))
+study.panel.loc <- merge(x = study.panel.loc, y = meter_loc, by = "POST_ID", all.x=TRUE)
+
+study.panel.loct <- #by meter and dow
+  parkingsample %>%
+  mutate(pk_Counter = 1) %>%
+  group_by(POST_ID, dotw) %>%
+  dplyr::summarize(pk_Count = sum(pk_Counter, na.rm=T))
+study.panel.loct <- merge(x = study.panel.loct, y = meter_loc, by = "POST_ID", all.x=TRUE)
+
+post_panel.sf <- st_as_sf(na.omit(study.panel.loc), coords = c("LONGITUDE", "LATITUDE"), crs = "+proj=longlat +crs = 'EPSG:6339'")
+
+study_panel.sf <- st_as_sf(na.omit(study.panel.loct), coords = c("LONGITUDE", "LATITUDE"), crs = "+proj=longlat +crs = 'EPSG:6339'")
+```
+
+## Census Data by tract - Independent Variables
+```{r get_census, message=FALSE, warning=FALSE, cache=TRUE, echo=FALSE, results='hide'}
+SFCensus <- 
+  get_acs(geography = "tract", 
+          variables = c("B01003_001", "B19013_001", 
+                        "B02001_002", "B08013_001",
+                        "B08012_001", "B08301_001", 
+                        "B08301_010", "B01002_001"), 
+          year = 2017, 
+          state = 06,
+          county= 075,
+          geometry = TRUE, 
+          output = "wide") %>%
+  dplyr::rename(Total_Pop =  B01003_001E,
+         Med_Inc = B19013_001E,
+         Med_Age = B01002_001E,
+         White_Pop = B02001_002E,
+         Travel_Time = B08013_001E,
+         Num_Commuters = B08012_001E,
+         Means_of_Transport = B08301_001E,
+         Total_Public_Trans = B08301_010E) %>%
+  dplyr::select(Total_Pop, Med_Inc, White_Pop, Travel_Time, 
+         Means_of_Transport, Total_Public_Trans,
+         Med_Age,
+         GEOID, geometry) %>%
+  mutate(Percent_White = White_Pop / Total_Pop,
+         Mean_Commute_Time = Travel_Time / Total_Public_Trans,
+         Percent_Taking_Public_Trans = Total_Public_Trans / Means_of_Transport)
+
+SFTracts <-
+  SFCensus %>%
+  as.data.frame() %>%
+  distinct(GEOID, .keep_all = TRUE) %>%
+  st_sf %>%
+  st_transform(st_crs(6339))
+
+`%nin%` = Negate(`%in%`)
+SFTracts <- subset(SFTracts, GEOID %nin% c("06075980401","06075017902","06075017902","06075017902"))
+
+dat_census <- st_join(study_panel.sf,
+        SFTracts %>%
+          st_transform(crs = "+proj=longlat +crs = 'EPSG:6339'"),
+        join=st_intersects,
+              left = TRUE) %>%
+  rename(Origin.Tract = GEOID) %>%
+  mutate(LONGITUDE = unlist(map(geometry, 1)),
+         LATITUDE = unlist(map(geometry, 2)))
+
+dat_census <-
+  dat_census %>%
+  select(POST_ID, dotw, pk_Count, ON_OFFSTREET_TYPE, Neighborhoods, Total_Pop, Med_Inc, White_Pop, Travel_Time, Means_of_Transport, Total_Public_Trans, Med_Age, Percent_White, Mean_Commute_Time, Percent_Taking_Public_Trans, LONGITUDE, LATITUDE)
+```
+
+## Environment Data - Independent Variables
+```{r load_indp, message=FALSE, warning = FALSE, echo=FALSE, results='hide'}
+park <- st_read("https://data.sfgov.org/resource/gtr9-ntp6.geojson") %>%
+    mutate(Legend = "park") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+spc_event <- st_read("https://data.sfgov.org/resource/itv4-r6g6.geojson") %>%
+    mutate(Legend = "special_event") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+reg_business <- st_read("https://data.sfgov.org/resource/itv4-r6g6.geojson") %>%
+    mutate(Legend = "business") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+street_lights <- st_read("https://data.sfgov.org/resource/vw6y-z8j6.geojson") %>% filter(., service_name == "Streetlights") %>%
+    mutate(Legend = "street_lights") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+parking_enforcement <- st_read("https://data.sfgov.org/resource/vw6y-z8j6.geojson") %>% filter(., service_name == "Parking Enforcement") %>%
+    mutate(Legend = "parking_enforcement") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+#landuse
+landuse <- st_read("Land_Use.geojson") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+pdr <- landuse %>% filter(., landuse == "PDR") %>% mutate(Legend = "dum_pdr") 
+retail <- landuse %>% filter(., landuse == "RETAIL/ENT") %>% mutate(Legend = "dum_retail")
+cultural <- landuse %>% filter(., landuse == "CIE") %>% mutate(Legend = "dum_culture") 
+medical <- landuse %>% filter(., landuse == "MED") %>% mutate(Legend = "dum_med")
+management <- landuse %>% filter(., landuse == "MIPS") %>% mutate(Legend = "dum_mgn")
+visitor <- landuse %>% filter(., landuse == "VISITOR") %>% mutate(Legend = "dum_vis")
+
+school <- st_read("https://data.sfgov.org/resource/tpp3-epx2.geojson") %>% mutate(Legend = "school") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+college <- st_read("https://data.sfgov.org/resource/8r3f-pc6a.geojson") %>% mutate(Legend = "college") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+transitstop <- st_read("https://opendata.arcgis.com/datasets/561dc5b42fa9451b95faf615a3054260_0.geojson") %>% mutate(Legend = "transit") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+historic_resources <- st_read("https://data.sfgov.org/resource/3tsw-4idn.geojson") %>% mutate(Legend = "historic_rcs") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+reg_historical <- st_read("https://data.sfgov.org/resource/tvzs-3qce.geojson") %>% mutate(Legend = "historical_dist") %>% st_set_crs("+proj=longlat +crs = 'EPSG:6339'")
+
+
+#weather
+weather.Panel <- 
+  riem_measures(station = "SFO", date_start = "2017-07-05", date_end = "2017-08-04") %>%
+  dplyr::select(valid, tmpf, p01i, sknt, vsby)%>% #add visibility in miles
+  replace(is.na(.), 0) %>%
+    mutate(interval60 = ymd_h(substr(valid,1,13))) %>%
+    mutate(week = week(interval60),
+           dotw = wday(interval60, label=TRUE)) %>%
+    group_by(interval60) %>%
+    dplyr::summarize(Temperature = max(tmpf),
+              Precipitation = sum(p01i),
+              Wind_Speed = max(sknt),
+              visibility = max(vsby)) %>%
+    mutate(Temperature = ifelse(Temperature == 0, 42, Temperature))
+
+grid.arrange(
+  ggplot(weather.Panel, aes(interval60,Precipitation)) + geom_line(color = "#cfe2f3ff", size = 1) + 
+  labs(title="Percipitation", x="Hour", y="Perecipitation") + plotTheme(),
+  ggplot(weather.Panel, aes(interval60,Wind_Speed)) + geom_line(color = "#cfe2f3ff", size = 1) + 
+    labs(title="Wind Speed", x="Hour", y="Wind Speed") + plotTheme(),
+  ggplot(weather.Panel, aes(interval60,Temperature)) + geom_line(color = "#cfe2f3ff", size = 1) + 
+    labs(title="Temperature", x="Hour", y="Temperature") + plotTheme(),
+  ggplot(weather.Panel, aes(interval60,Temperature)) + geom_line(color = "#cfe2f3ff", size = 1) + 
+    labs(title="Visibility", x="Hour", y="Temperature") + plotTheme(),
+  top="Weather Data - San Francisco SFO - July/August, 2017")
+```
+
+## Distance to Nearest Neighbors - Independent Variables
+```{r transform, message=FALSE, warning = FALSE, echo=FALSE, results='hide'}
+st_c <- st_coordinates
+st_coid <- st_centroid
+
+vars_nn <-
+  study_panel.sf %>%
+    mutate(
+      # park.nn =
+      #   nn_function(st_c(study_panel.sf), st_c(st_coid(park)),1),
+      spc_event.nn =
+        nn_function(st_c(study_panel.sf), st_c(st_coid(spc_event)),1),
+      reg_business.nn =
+        nn_function(st_c(study_panel.sf), st_c(st_coid(reg_business)),1),
+      lights.nn =
+        nn_function(st_c(study_panel.sf), st_c(street_lights),2),
+      enforcement.nn =
+        nn_function(st_c(study_panel.sf), st_c(parking_enforcement),3),
+      school.nn =
+        nn_function(st_c(study_panel.sf), st_c(school),1),
+      college.nn =
+        nn_function(st_c(study_panel.sf), st_c(college),1),
+      transitstop.nn =
+        nn_function(st_c(study_panel.sf), st_c(transitstop),1),
+      historic_resources.nn =
+        nn_function(st_c(study_panel.sf), st_c(st_coid(historic_resources)),1),
+      reg_historical.nn =
+        nn_function(st_c(study_panel.sf), st_c(st_coid(reg_historical)),1)
+      )
+
+vars_nn <- vars_nn %>%
+  select(POST_ID, dotw, spc_event.nn, reg_business.nn, lights.nn, enforcement.nn, school.nn, college.nn, transitstop.nn, historic_resources.nn, reg_historical.nn) %>%
+  st_transform(crs = "+proj=longlat +crs = 'EPSG:6339'")
+
+vars_dummy <- 
+  study_panel.sf %>%
+    mutate(
+      pdr = ifelse(st_intersects(study_panel.sf, pdr), 1, 0),
+      pdr = ifelse(is.na(pdr)==T, 0, pdr),
+      retail = ifelse(st_intersects(study_panel.sf, retail), 1, 0),
+      retail = ifelse(is.na(retail)==T, 0, pdr),
+      cultural = ifelse(st_intersects(study_panel.sf, cultural), 1, 0),
+      cultural = ifelse(is.na(cultural)==T, 0, cultural),
+      medical = ifelse(st_intersects(study_panel.sf, medical), 1, 0),
+      medical = ifelse(is.na(medical)==T, 0, medical),
+      management = ifelse(st_intersects(study_panel.sf, management), 1, 0),
+      management = ifelse(is.na(management)==T, 0, management),
+      visitor = ifelse(st_intersects(study_panel.sf, visitor), 1, 0),
+      visitor = ifelse(is.na(visitor)==T, 0, visitor),
+    )
+
+vars_dummy <-
+  vars_dummy %>%
+  select(POST_ID, dotw, pdr, retail, cultural, medical, management, visitor)
+
+nn_and_dummy <- 
+  left_join(as.data.frame(vars_nn), vars_dummy, by=c("POST_ID", "dotw"))
+```
+
+## Joining all to one
+```{r}
+dat_all <- 
+  left_join(as.data.frame(dat_census), nn_and_dummy, by=c("POST_ID", "dotw"))
+
+# Parking count per day
+dat_all <- dat_all %>%
+  mutate(pk_Count = pk_Count/4)
+
+# ! saved a file with all joined data
+# write.csv(dat_all, "dat_all.csv")
+```
+
+# Exploratory Analysis
+## Distribution of parking posts
+Considered count by post by hour, but the distribution of data does not satisfy regression. 
+```{r histogram count by post and log of count by post }
+# count by post per day
+ggplot(post_panel.sf, 
+       aes(x=(pk_Count/28)))+ 
+  geom_histogram(fill = "#cfe2f3ff")+ 
+  scale_y_continuous("Frequency") + 
+  scale_x_continuous("Count") + 
+  labs(caption="Figure X. Histogram of average count by meter per day")
+# logged count by post per day
+ggplot(post_panel.sf, 
+       aes(x=pk_Count/28))+ 
+  geom_histogram(fill = "#cfe2f3ff")+ 
+  scale_y_continuous("Frequency") + 
+  scale_x_log10("Log of Count") + 
+  labs(caption="Figure X. Histogram of average log of count by meter per day")
+```
+
+## Spatial Distribution
+```{r map}
+post_panel.sf <- post_panel.sf %>%
+  mutate(LONGITUDE = unlist(map(geometry, 1)),
+         LATITUDE = unlist(map(geometry, 2)))
+
+ggplot()+
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), colour = '#efefef')+
+  geom_point(data = post_panel.sf,
+             aes(x=LONGITUDE, y = LATITUDE, color = (pk_Count/28)), 
+             fill = "transparent",  size = 0.2)+
+  scale_colour_viridis(discrete = FALSE, option = "D",
+                       name="Average count \nper day")+
+  labs(title="Parking Sessions per day by post,\nSan Francisco, July 4 - August 4, 2017",caption = "Figure X") +
+  mapTheme()
+```
+
+
+
+## Exploring Time 
+```{r by dow}
+study.panel.plot <- dat_all %>%
+               group_by(POST_ID, dotw, LONGITUDE, LATITUDE) %>%
+               tally()
+
+ggplot(study.panel.plot)+
+  geom_col(aes(dotw, n/4), fill = "#cfe2f3ff", size = 1.25)+
+  labs(title="Average Parking Sessions by Day of Week,\nSan Francisco, July 4 - August 1, 2017",
+       x="Day of Week", 
+       y="Number of Sessions")+
+  plotTheme()
+```
+
+```{r}
+# plot map by day of the week
+ggplot()+
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), colour = '#efefef')+
+  geom_point(data = study.panel.plot,
+             aes(x=LONGITUDE, y = LATITUDE, color = n/4), 
+             fill = "transparent",  size = 1)+
+  scale_colour_viridis(discrete = FALSE, option = "D",
+                       name="Count")+
+  facet_grid(~ dotw)+
+  labs(title="Average Parking Sessions Count by Day of Week,\nSan Francisco, July 4 - August 1, 2017") +
+  mapTheme()
+```
+
+This plots shows how day of week alters parking counts. It is also illustrated that time of day could also be associated with parking count, but the data distribution is not great for prediction for our sample.
+```{r by hour by dow}
+ggplot(parkingsample %>% mutate(hour = hour(SESSION_END_DT)))+
+  geom_freqpoly(aes(hour, color = dotw), binwidth = 1, size = 1)+
+  labs(title="Parking Sessions by Day of the Week,\nSan Francisco, July 4 - August 4, 2017",
+       x="Hour", 
+       y="Session Counts",caption = "Figure X")+
+  plotTheme()
+```
+
+## Predictors
+```{r continuous demographic}
+park_exp.demographic <-
+  dat_all %>%
+  dplyr::select(pk_Count,
+                Total_Pop, Med_Inc, White_Pop, Med_Age,
+                Percent_White,
+    -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
+  gather(key,value, -pk_Count)
+
+ggplot(park_exp.demographic, aes(value))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Variable value",y="Count",
+       title = "Distribution across variables",
+       name="")+
+  theme(legend.position="bottom")
+
+cor.demographic <-
+  park_exp.demographic %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, pk_Count, use = "complete.obs"))
+
+ggplot(park_exp.demographic) + 
+    geom_point(aes(value, pk_Count, color=key)) + 
+    geom_text(data = cor.demographic, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+    geom_smooth(method = "lm", aes(x=value, y=pk_Count), color="#cfe2f3ff", size = 1.5)+
+    facet_wrap(~key, scales = "free") +
+    scale_color_viridis(name = "Variables", discrete = T)+
+    labs(title = "Feature distributions",
+         subtitle = "(continous outcomes for numeric variables)") +
+    theme(legend.position = "right")
+```
+
+```{r continouus transport}
+park_exp.transport <-
+  dat_all %>%
+  dplyr::select(pk_Count,
+                Total_Public_Trans, Mean_Commute_Time, Percent_Taking_Public_Trans,
+    -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
+  gather(key,value, -pk_Count)
+
+ggplot(park_exp.transport, aes(value))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Variable value",y="Count",
+       title = "Distribution across variables")+
+  theme(legend.position="bottom")
+
+cor.transport <-
+  park_exp.transport %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, pk_Count, use = "complete.obs"))
+
+ggplot(park_exp.transport) + 
+    geom_point(aes(value, pk_Count, color=key), fill = "transparent") + 
+    geom_text(data = cor.transport, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+    geom_smooth(method = "lm", aes(x=value, y=pk_Count), color="#cfe2f3ff", size = 1.5)+
+    facet_wrap(~key, scales = "free") +
+    scale_color_viridis(name = "Variables", discrete = T)+
+    labs(title = "Feature distributions",
+         subtitle = "(continous outcomes for numeric variables)") +
+    theme(legend.position = "right")
+```
+
+```{r continuous nn}
+park_exp.nn <-
+  dat_all %>%
+  dplyr::select(pk_Count,
+                spc_event.nn, reg_business.nn, lights.nn, enforcement.nn, school.nn, college.nn, transitstop.nn, historic_resources.nn, reg_historical.nn,
+    -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
+  gather(key,value, -pk_Count)
+
+ggplot(park_exp.nn, aes(value))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Variable value",y="Count",
+       title = "Distribution across variables")+
+  theme(legend.position="bottom")
+
+cor.nn <-
+  park_exp.nn %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, pk_Count, use = "complete.obs"))
+
+ggplot(park_exp.nn) + 
+    geom_point(aes(value, pk_Count, color=key), fill = "transparent") + 
+    geom_text(data = cor.nn, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+    geom_smooth(method = "lm", aes(x=value, y=pk_Count), color="#cfe2f3ff")+
+    facet_wrap(~key, scales = "free") +
+    scale_color_viridis(name = "Variables", discrete = T)+
+    labs(title = "Feature distributions",
+         subtitle = "(continous outcomes for numeric variables)") +
+    theme(legend.position = "right")
+```
+
+Map distribution of features for two most sig features
+```{r spc event}
+ggplot()+
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), colour = '#efefef')+
+  geom_sf(data = spc_event %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), fill = '#d8e2dc')+
+  geom_point(data = dat_all,
+             aes(x=LONGITUDE, y = LATITUDE, color = spc_event.nn), 
+             size = 0.2)+
+scale_colour_gradient2(low = "#0077b6",
+                         high = "#caf0f8",
+                         mid = "#48cae4",
+                         midpoint = 0.03244,
+                         na.value = "transparent") +
+  mapTheme()
+```
+
+```{r total pop and parking count}
+ggplot()+
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), color = "grey", aes(fill = Total_Pop))+
+  scale_fill_gradient(low = "gray40",
+                      high = "gray5") +
+  geom_point(data = dat_all,
+             aes(x=LONGITUDE, y = LATITUDE, color = pk_Count), 
+             size = 0.2)+
+  scale_colour_gradient2(low = "#437d95",
+                         high = "#b75564",
+                         mid = "#f8edeb",
+                         midpoint = 1.511,
+                         na.value = "transparent") +
+  mapTheme()
+```
+
+Note: 
+Delete retail and visitor
+```{r categorical}
+park_exp.cat <-
+  dat_all %>%
+  dplyr::select(pk_Count,
+                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, retail, cultural, medical, management, visitor,
+    -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
+  gather(key,value, -pk_Count)
+
+ggplot(park_exp.cat, aes(y=pk_Count, x=as.factor(value), fill=key))+
+  geom_bar(position = "dodge", stat = "summary", fun.y = "mean")+
+  scale_fill_viridis(name = "Variables", discrete = T)+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="category",y="mean value")+
+  theme(legend.position="right")
+```
+
+# Feature engineering
+## Test of Correlation
+```{r}
+numericVars <- dat_all %>%
+  dplyr::select(pk_Count,
+                Total_Pop, Med_Inc, White_Pop, Med_Age, Percent_White, Total_Public_Trans, Mean_Commute_Time, Percent_Taking_Public_Trans, spc_event.nn, reg_business.nn, lights.nn, enforcement.nn, school.nn, college.nn, transitstop.nn, historic_resources.nn, reg_historical.nn)
+
+ggcorrplot(outline.col = "white", type = "lower",
+  round(cor(numericVars), 1), 
+  p.mat = cor_pmat(numericVars),
+  colors = c("#f28482", "white", "#0096c7"),
+  insig = "blank") +  
+  labs(title = "Correlation across numeric variables")
+```
+
+## Selecting variables
+```{r}
+final_vars <- dat_all %>%
+  select(pk_Count,
+         # continuous
+          # Med_Inc, due to high cor with total pop
+          # White_Pop, due to high cor with total pop
+          # Total_Public_Trans, due to high cor with total pop
+          # Mean_Commute_Time, due to high cor with % public transit
+          # college.nn, due to high cor with spc_event
+          # reg_business.nn, exactly the same as spe_event.nn
+          # reg_historical.nn, high cor with lights.nn & spc_event.nn
+          # school.nn, high cor with hist recours.nn
+        Total_Pop, 
+        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
+        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
+        # categorical
+          # retail, visitor, due to only one value
+          # Means_of_Transport, due to too many categories
+        ON_OFFSTREET_TYPE, Neighborhoods, pdr, 
+        cultural, medical, management, dotw
+         )
+
+final_numeric_vars <- dat_all %>%
+  select(pk_Count,
+         # continuous
+        Total_Pop, 
+        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
+        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
+         )
+
+rcorr(as.matrix(final_numeric_vars[]), type = c("pearson"))
+
+ggcorrplot(outline.col = "white", type = "lower",
+  round(cor(final_numeric_vars), 1), 
+  p.mat = cor_pmat(final_numeric_vars),
+  colors = c("#f28482", "white", "#0096c7"),
+  insig = "blank") +  
+  labs(title = "Correlation across numeric variables")
+```
+
+## Log Transformation
+
+# Model
+## Model Building
+### Initial Model
+```{r OLS}
+olsModel <- lm ( pk_Count ~ ., data = final_vars) 
+summary(olsModel)
+```
+
+```{r}
+binomial_vars <- final_vars %>%
+  mutate(highDemand = ifelse(pk_Count > mean(dat_all$pk_Count), 1, 0)) %>%
+  select(-pk_Count)
+
+binomialModel <- glm(as.factor(highDemand) ~.,family = "binomial"(link="logit"),
+                  data= binomial_vars)
+summary(binomialModel)
+```
+
+
+### Backward selection
+### Final Model
+
+## Model Evaluation
+### Predictors
+
+### Goodness of fit
+#### R square and deviance
+#### Confusion matrix and ROC curve
+
+
+# Findings
+## Interpretation of predictors
+## Probabilities versus changes in key variables
+## Map of distribution of predicted outcome
+
+# Discussion
+## Planning implications
+## Next steps
+
+
+
+
+# Animation that doesn't work - seems like I'm one step away
+```{r}
+# library(gganimate)
+# library(gifski)
+# 
+# week <- study.panel.loct %>%
+#   mutate(dotw = wday(interval60, label=TRUE),
+#          week = week(interval60)) %>%
+#   filter(week==27)
+# 
+# week.panel <-
+#   expand.grid(
+#     dotw = unique(week$dotw),
+#     POST_ID = unique(study.panel.loct$POST_ID))
+# 
+# ride.animation.data <-
+#   mutate(monday, Trip_Counter = 1) %>%
+#   select(dotw, POST_ID, LONGITUDE, LATITUDE, Trip_Counter) %>%
+#   group_by(dotw, POST_ID, LONGITUDE, LATITUDE) %>%
+#   dplyr::summarize(Trip_Count = sum(Trip_Counter, na.rm=T)) %>% 
+#   ungroup() %>% 
+#   mutate(Trips = case_when(Trip_Count == 0 ~ "0 trips",
+#                            Trip_Count > 0 & Trip_Count <= 2 ~ "0-2 trips",
+#                            Trip_Count > 2 & Trip_Count <= 5 ~ "2-5 trips",
+#                            Trip_Count > 5 & Trip_Count <= 10 ~ "5-10 trips",
+#                            Trip_Count > 10 & Trip_Count <= 15 ~ "10-15 trips",
+#                            Trip_Count > 15 ~ "15+ trips")) %>%
+#   mutate(Trips  = fct_relevel(Trips, "0 trips","0-2 trips","2-5 trips",
+#                               "5-10 trips","10-15 trips","15+ trips")) %>%
+#   na.omit()
+# 
+# ride.animation.data <- ride.animation.data %>%
+#   st_as_sf(coords = c("LONGITUDE","LATITUDE"),crs = "+proj=longlat +crs = 'EPSG:6339'") %>%
+#   as.data.frame()
+# 
+# rideshare_animation <-
+#   ggplot()+
+#   geom_sf(data = SFTracts %>%
+#             st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), colour = '#efefef')+
+#   geom_point(data = ride.animation.data, 
+#              aes(color = Trips, size = 0.5), alpha = 1.5) +
+#   scale_colour_viridis() +
+#   labs(title = "Parking Sessions by Block for April 30th, 2018",
+#        subtitle = "15 minute intervals: {current_frame}",caption = "Figure 7") +
+#   transition_manual(dotw) +
+#   mapTheme()
+# 
+# animate(rideshare_animation, duration=20, renderer = gifski_renderer())
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
