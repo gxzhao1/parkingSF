@@ -97,17 +97,14 @@ nn_function <- function(measureFrom,measureTo,k) {
 
 #Please save these line
 ## Gillian's working directory 
-setwd("G:/UPenn/CPLN505_PlaningByNumbers/Final Project/GillianParkingSF") 
+#setwd("G:/UPenn/CPLN505_PlaningByNumbers/Final Project/GillianParkingSF") 
 ## !!Bingchu's working directory!! 
-# setwd("D:/Upenn/CPLN505/final project")
+setwd("D:/Upenn/CPLN505/final project/parkingSF")
 ```
 
 # Data
 ## Parking meters data - Dependent Variable
 ```{r load_data, cache = TRUE, include = FALSE}
-#Bingchu's data location
-#meter_loc <- st_read("D:/Upenn/CPLN505/final project/Parking_Meters.csv") 
-#parking <- read.csv("D:/Upenn/CPLN505/final project/SFMTA_Parking_Meter_Detailed_Revenue_Transactions.csv")
 
 meter_loc <- st_read("Parking_Meters.csv") 
 parking <- read.csv("SFMTA_Parking_Meter_Detailed_Revenue_Transactions.csv")
@@ -115,7 +112,7 @@ set.seed(123)
 parkingsample <- sample_n(parking, 1000000)%>%
   na.omit()
 
-parkingsample <- 
+parkingsample <- #why?
   parkingsample %>%
   mutate(interval60 = floor_date(ymd_hms(SESSION_START_DT), unit = "hour"),
          interval15 = floor_date(ymd_hms(SESSION_START_DT), unit = "15 mins"),
@@ -182,7 +179,7 @@ SFTracts <-
   st_sf %>%
   st_transform(st_crs(6339))
 
-`%nin%` = Negate(`%in%`)
+`%nin%` = Negate(`%in%`) #??
 SFTracts <- subset(SFTracts, GEOID %nin% c("06075980401","06075017902","06075017902","06075017902"))
 
 dat_census <- st_join(study_panel.sf,
@@ -326,10 +323,12 @@ dat_all <-
 
 # Parking count per day
 dat_all <- dat_all %>%
-  mutate(pk_Count = pk_Count/4)
+  mutate(pk_Count = pk_Count/4) #why?
 
 # ! saved a file with all joined data
 # write.csv(dat_all, "dat_all.csv")
+dat_all <- read.csv("dat_all.csv")
+# Error in read.table(file = file, header = header, sep = sep, quote = quote, : more columns than column names
 ```
 
 # Exploratory Analysis
@@ -353,7 +352,7 @@ ggplot(post_panel.sf,
 ```
 
 ## Spatial Distribution
-```{r map}
+```{r map, fig.height=8, fig.width=8}
 post_panel.sf <- post_panel.sf %>%
   mutate(LONGITUDE = unlist(map(geometry, 1)),
          LATITUDE = unlist(map(geometry, 2)))
@@ -373,7 +372,7 @@ ggplot()+
 
 
 ## Exploring Time 
-```{r by dow}
+```{r temporal by dow}
 study.panel.plot <- dat_all %>%
                group_by(POST_ID, dotw, LONGITUDE, LATITUDE) %>%
                tally()
@@ -386,7 +385,7 @@ ggplot(study.panel.plot)+
   plotTheme()
 ```
 
-```{r}
+```{r spacial by dow, fig.height=6, fig.width=8}
 # plot map by day of the week
 ggplot()+
   geom_sf(data = SFTracts %>%
@@ -551,14 +550,14 @@ Delete retail and visitor
 park_exp.cat <-
   dat_all %>%
   dplyr::select(pk_Count,
-                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, retail, cultural, medical, management, visitor,
+                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, cultural, medical, management,
     -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
   gather(key,value, -pk_Count)
 
 ggplot(park_exp.cat, aes(y=pk_Count, x=as.factor(value), fill=key))+
   geom_bar(position = "dodge", stat = "summary", fun.y = "mean")+
   scale_fill_viridis(name = "Variables", discrete = T)+
-  facet_wrap(~key, scales="free", ncol=3)+
+  facet_wrap(~key, scales="free", ncol=2)+
   labs(x="category",y="mean value")+
   theme(legend.position="right")
 ```
@@ -629,7 +628,7 @@ olsModel <- lm ( pk_Count ~ ., data = final_vars)
 summary(olsModel)
 ```
 
-```{r}
+```{r binomial}
 binomial_vars <- final_vars %>%
   mutate(highDemand = ifelse(pk_Count > mean(dat_all$pk_Count), 1, 0)) %>%
   select(-pk_Count)
@@ -644,11 +643,16 @@ summary(binomialModel)
 ### Final Model
 
 ## Model Evaluation
-### Predictors
+### Predictors ??
+
+```{r prediction map}
+
+```
 
 ### Goodness of fit
 #### R square and deviance
 #### Confusion matrix and ROC curve
+#### Senario Plot
 
 
 # Findings
