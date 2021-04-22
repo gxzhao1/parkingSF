@@ -36,6 +36,13 @@ library(jtools)
 library(stringr)
 library(ggcorrplot)
 library(Hmisc)
+library(car)
+library(stargazer)
+library(mlogit)
+library(huxtable)
+library(plotROC)
+library(ROCR)
+library(pROC)
 
 plotTheme <- function(base_size = 12) {
   theme(
@@ -329,7 +336,9 @@ dat_all <- dat_all %>%
   mutate(pk_Count = pk_Count/4)
 
 # ! saved a file with all joined data
-# write.csv(dat_all, "dat_all.csv")
+#write.table(dat_all, sep="\t", file="dat_all_01.txt", row.names=FALSE)
+
+dat_all <- read.delim("dat_all_01.txt")
 ```
 
 # Exploratory Analysis
@@ -353,7 +362,7 @@ ggplot(post_panel.sf,
 ```
 
 ## Spatial Distribution
-```{r map}
+```{r map, fig.height=8, fig.width=8}
 post_panel.sf <- post_panel.sf %>%
   mutate(LONGITUDE = unlist(map(geometry, 1)),
          LATITUDE = unlist(map(geometry, 2)))
@@ -373,7 +382,7 @@ ggplot()+
 
 
 ## Exploring Time 
-```{r by dow}
+```{r temporal by dow}
 study.panel.plot <- dat_all %>%
                group_by(POST_ID, dotw, LONGITUDE, LATITUDE) %>%
                tally()
@@ -386,7 +395,7 @@ ggplot(study.panel.plot)+
   plotTheme()
 ```
 
-```{r}
+```{r spacial by dow, fig.height=6, fig.width=8}
 # plot map by day of the week
 ggplot()+
   geom_sf(data = SFTracts %>%
@@ -429,6 +438,17 @@ ggplot(park_exp.demographic, aes(value))+
        name="")+
   theme(legend.position="bottom")
 
+ggplot(park_exp.demographic, aes(log(value)))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Log of Variable value",y="Count",
+       title = "Distribution across variables, after log transformation",
+       name="")+
+  theme(legend.position="bottom")
+```
+
+Interpretation: After comparing correlation R-squared for no log, log level, and log log (level log is same as log level for bivariate correlation), I found that log transformation seem to be helpful: log transform DV, log transform IV: medium income and white pop.
+```{r demographic log transform}
 cor.demographic <-
   park_exp.demographic %>%
   group_by(key) %>%
@@ -442,6 +462,33 @@ ggplot(park_exp.demographic) +
     facet_wrap(~key, scales = "free") +
     scale_color_viridis(name = "Variables", discrete = T)+
     labs(title = "Feature distributions",
+         subtitle = "(continous outcomes for numeric variables)") +
+    theme(legend.position = "right")
+
+cor.demographic.loglevel <-
+  park_exp.demographic %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, log(pk_Count), use = "complete.obs"))
+
+cor.demographic.loglog <-
+  park_exp.demographic %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(log(value), log(pk_Count), use = "complete.obs"))
+
+cor.demo.compare <- 
+  cbind(cor.demographic, cor.demographic.loglevel[2], cor.demographic.loglog[2])
+colnames(cor.demo.compare) = c("Variable", "no log", "log level", "log log")
+
+kable(cor.demo.compare, caption = "Correlation comparison for demographic variables")
+
+ggplot(park_exp.demographic) + 
+    geom_point(aes(log(value), log(pk_Count), color=key)) + 
+    geom_text(data = cor.demographic, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+    geom_smooth(method = "lm", aes(x=log(value), y=log(pk_Count)), color="#cfe2f3ff", size = 1.5)+
+    facet_wrap(~key, scales = "free") +
+    scale_color_viridis(name = "Variables", discrete = T)+
+    labs(title = "Feature correlations, after log transformation of both",
          subtitle = "(continous outcomes for numeric variables)") +
     theme(legend.position = "right")
 ```
@@ -461,10 +508,34 @@ ggplot(park_exp.transport, aes(value))+
        title = "Distribution across variables")+
   theme(legend.position="bottom")
 
+ggplot(park_exp.transport, aes(log(value)))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Log of Variable value",y="Count",
+       title = "Distribution across variables, after log transformation")+
+  theme(legend.position="bottom")
+```
+```{r transport log transform}
 cor.transport <-
   park_exp.transport %>%
   group_by(key) %>%
   dplyr::summarize(correlation = cor(value, pk_Count, use = "complete.obs"))
+
+cor.transport.loglevel <-
+  park_exp.transport %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, log(pk_Count), use = "complete.obs"))
+
+cor.transport.loglog <-
+  park_exp.transport %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(log(value), log(pk_Count), use = "complete.obs"))
+
+cor.trans.compare <- 
+  cbind(cor.transport, cor.transport.loglevel[2], cor.transport.loglog[2])
+colnames(cor.trans.compare) = c("Variable", "no log", "log level", "log log")
+
+kable(cor.trans.compare, caption = "Correlation comparison for transportation variables")
 
 ggplot(park_exp.transport) + 
     geom_point(aes(value, pk_Count, color=key), fill = "transparent") + 
@@ -478,6 +549,7 @@ ggplot(park_exp.transport) +
     theme(legend.position = "right")
 ```
 
+Interpretation: log transformation help % taking public transit and total public transit
 ```{r continuous nn}
 park_exp.nn <-
   dat_all %>%
@@ -493,10 +565,36 @@ ggplot(park_exp.nn, aes(value))+
        title = "Distribution across variables")+
   theme(legend.position="bottom")
 
+ggplot(park_exp.nn, aes(log(value)))+
+  geom_bar(stat = "bin", fill="#cfe2f3ff")+
+  facet_wrap(~key, scales="free", ncol=3)+
+  labs(x="Log of Variable value",y="Count",
+       title = "Distribution across variables, after log transformation")+
+  theme(legend.position="bottom")
+```
+
+Interpretation: log transformation help some but not all...
+```{r nn log transformation}
 cor.nn <-
   park_exp.nn %>%
   group_by(key) %>%
   dplyr::summarize(correlation = cor(value, pk_Count, use = "complete.obs"))
+
+cor.nn.loglevel <-
+  park_exp.nn %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(value, log(pk_Count), use = "complete.obs"))
+
+cor.nn.loglog <-
+  park_exp.nn %>%
+  group_by(key) %>%
+  dplyr::summarize(correlation = cor(log(value), log(pk_Count), use = "complete.obs"))
+
+cor.nn.compare <- 
+  cbind(cor.nn, cor.nn.loglevel[2], cor.nn.loglog[2])
+colnames(cor.nn.compare) = c("Variable", "no log", "log level", "log log")
+
+kable(cor.nn.compare, caption = "Correlation comparison for transportation variables")
 
 ggplot(park_exp.nn) + 
     geom_point(aes(value, pk_Count, color=key), fill = "transparent") + 
@@ -509,6 +607,7 @@ ggplot(park_exp.nn) +
          subtitle = "(continous outcomes for numeric variables)") +
     theme(legend.position = "right")
 ```
+
 
 Map distribution of features for two most sig features
 ```{r spc event}
@@ -545,20 +644,19 @@ ggplot()+
   mapTheme()
 ```
 
-Note: 
-Delete retail and visitor
+
 ```{r categorical}
 park_exp.cat <-
   dat_all %>%
   dplyr::select(pk_Count,
-                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, retail, cultural, medical, management, visitor,
+                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, cultural, medical, management, #visitor #retail, 
     -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
   gather(key,value, -pk_Count)
 
 ggplot(park_exp.cat, aes(y=pk_Count, x=as.factor(value), fill=key))+
   geom_bar(position = "dodge", stat = "summary", fun.y = "mean")+
   scale_fill_viridis(name = "Variables", discrete = T)+
-  facet_wrap(~key, scales="free", ncol=3)+
+  facet_wrap(~key, scales="free", ncol=2)+
   labs(x="category",y="mean value")+
   theme(legend.position="right")
 ```
@@ -570,6 +668,8 @@ numericVars <- dat_all %>%
   dplyr::select(pk_Count,
                 Total_Pop, Med_Inc, White_Pop, Med_Age, Percent_White, Total_Public_Trans, Mean_Commute_Time, Percent_Taking_Public_Trans, spc_event.nn, reg_business.nn, lights.nn, enforcement.nn, school.nn, college.nn, transitstop.nn, historic_resources.nn, reg_historical.nn)
 
+rcorr(as.matrix(numericVars[]), type = c("pearson"))
+
 ggcorrplot(outline.col = "white", type = "lower",
   round(cor(numericVars), 1), 
   p.mat = cor_pmat(numericVars),
@@ -579,7 +679,7 @@ ggcorrplot(outline.col = "white", type = "lower",
 ```
 
 ## Selecting variables
-```{r}
+```{r select variables}
 final_vars <- dat_all %>%
   select(pk_Count,
          # continuous
@@ -606,8 +706,7 @@ final_numeric_vars <- dat_all %>%
          # continuous
         Total_Pop, 
         Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
-        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
-         )
+        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn)
 
 rcorr(as.matrix(final_numeric_vars[]), type = c("pearson"))
 
@@ -624,12 +723,54 @@ ggcorrplot(outline.col = "white", type = "lower",
 # Model
 ## Model Building
 ### Initial Model
-```{r OLS}
+#### OLS
+```{r OLS no log}
 olsModel <- lm ( pk_Count ~ ., data = final_vars) 
+summary(olsModel)
+
+olsModel <- lm ( pk_Count ~ ., data = final_vars %>% select(-Neighborhoods)) 
 summary(olsModel)
 ```
 
-```{r}
+```{r log level}
+olsModel.loglevel <- lm ( log(pk_Count) ~ ., data = final_vars) 
+summary(olsModel.loglevel)
+```
+
+```{r log logsome}
+final_vars <- dat_all %>%
+  select(pk_Count,
+         # continuous
+          # Med_Inc, due to high cor with total pop
+          # White_Pop, due to high cor with total pop
+          # Total_Public_Trans, due to high cor with total pop
+          # Mean_Commute_Time, due to high cor with % public transit
+          # college.nn, due to high cor with spc_event
+          # reg_business.nn, exactly the same as spe_event.nn
+          # reg_historical.nn, high cor with lights.nn & spc_event.nn
+          # school.nn, high cor with hist recours.nn
+        Total_Pop, 
+        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
+        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
+        # categorical
+          # retail, visitor, due to only one value
+          # Means_of_Transport, due to too many categories
+        ON_OFFSTREET_TYPE, Neighborhoods, pdr, 
+        cultural, medical, management, dotw
+         )
+
+final_vars.logsome <- final_vars %>%
+  mutate(log_Med_Age = log(Med_Age),
+         log_Percent_Taking_Public_Trans = log(Percent_Taking_Public_Trans)) %>%
+  select(-Med_Age, -Percent_Taking_Public_Trans)
+  
+
+olsModel.loglog <- lm ( log(pk_Count) ~ ., data = final_vars.logsome) 
+summary(olsModel.loglog)
+```
+
+#### Binomial
+```{r binomial}
 binomial_vars <- final_vars %>%
   mutate(highDemand = ifelse(pk_Count > mean(dat_all$pk_Count), 1, 0)) %>%
   select(-pk_Count)
@@ -640,25 +781,192 @@ summary(binomialModel)
 ```
 
 
-### Backward selection
-### Final Model
+#### Backward selection and evaluation
+```{r OLS backward}
+olsModel_backstep <- step( lm(formula = pk_Count ~ ., data = final_vars), direction="backward") #backward selection
+olsModel1 <- lm ( pk_Count ~ Total_Pop + Percent_White + Percent_Taking_Public_Trans + 
+    spc_event.nn + lights.nn + enforcement.nn + transitstop.nn + 
+    historic_resources.nn + ON_OFFSTREET_TYPE + Neighborhoods + 
+    cultural + medical + dotw, data = final_vars)  # got rid of pdr, management and med age
+# why got rid of med age??
+summary(olsModel1)
 
-## Model Evaluation
+car::vif(olsModel) 
+#this is solved re:spc_event.nn  6.943247 1.000000 2.635004  #lights.nn  5.614941 1.000000 2.369587
+sqrt(vif(olsModel))
+vif(olsModel1) 
+sqrt(vif(olsModel1))
+# The following comment from Bingchu is also resolved - all VIF values are fine
+# spc_event.nn                  6.833475 1.000000        2.614092
+# lights.nn                     5.598379 1.000000        2.366089
+
+stargazer(olsModel, olsModel1, type = "text", title = "multivariate models")
+# olsModel1 is the leanest and meanest
+```
+
+```{r binomial backwards}
+step(binomialModel, direction="backward")
+
+# Got rid of lights.nn, pdr, management based on backward selection and drop1 functions
+binomialModel1 <- glm(formula = as.factor(highDemand) ~ Total_Pop + Med_Age + Percent_White + 
+    Percent_Taking_Public_Trans + spc_event.nn + enforcement.nn + 
+    transitstop.nn + historic_resources.nn + ON_OFFSTREET_TYPE + 
+    Neighborhoods + cultural + medical + dotw, family = binomial(link = "logit"), 
+    data = binomial_vars)
+summary(binomialModel1)
+```
+
+Interpretation: the model prediction does not fit the data well at 95% significance since the null and residual deviance are larger than the critical value. However, our final model was able to improve the null model by lowering the deviance to a value that is approximate the critical value.
+```{r binomial eva}
+# for binomialModel
+qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
+                      # Residual deviance: 164510  on 156425  degrees of freedom
+                      # AIC: 164706
+qchisq(.95, df=156425)
+anova(binomialModel, test="Chisq")
+drop1(binomialModel, test="Chisq")
+
+# for binomialModel1
+qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
+                      # Residual deviance: 174674  on 156504  degrees of freedom
+                      # AIC: 164706
+qchisq(.95, df=156504) # 157425.4
+qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
+                      # Residual deviance: 174674  on 156504  degrees of freedom
+                      # AIC: 164706
+anova(binomialModel, test="Chisq")
+drop1(binomialModel, test="Chisq")
+
+stargazer(binomialModel, binomialModel1, type = "text", title = "binomial models")
+# Interpretation: binomialModel1 is slightly better?
+```
+### Model Improvement
+Interaction terms?
+
+### Final Model
 ### Predictors
+```{r}
+export_summs(
+  olsModel1, binomialModel1,
+  statistics = c(N = "nobs", R2 = "r.squared", adj.R2 = "adj.r.squared", F_test = "statistic"),
+  model.names=c("A: y=OLS","B: y=binomial"),
+  note=c("Model Comparison Table")) %>%
+  set_width(0.9) %>%
+  set_row_height(0.5) %>%
+  set_font_size(8) %>%
+  set_all_padding(0.5)
+```
+
 
 ### Goodness of fit
 #### R square and deviance
+##### OLS
+R-squared values and F-tests statistics help compare the models. r-squared tell how well the model fits the data, while the F-tests of overall significance indicates whether the model provides a better fit to the data than a model that contains no independent variables. The F value is the ratio of the mean regression sum of squares divided by the mean error sum of squares. Its value will range from zero to an arbitrarily large number. 
+
+R-squared values: Both our base model and the final model has a adjusted r-squared (and r-squared) of 0.23. This further verifies that the final model has the most meaningful predictors.
+
+F-tests: The base model has a F value of  2264 and final model has a higher F value of 2640. Along with r-squared value, this signals our final model is the leanest model in predicting daily parking count for a parking meter.
+
 #### Confusion matrix and ROC curve
+```{r}
+testProbs <- data.frame(Outcome = as.factor(binomial_vars$highDemand),
+                        Probs = predict(binomialModel1, binomial_vars, type= "response"))
+
+# To find the best value for probability threshold that balances precision and sensitivity
+pred<-prediction(testProbs[is.na(testProbs$Outcome)==FALSE,]$Probs,testProbs[is.na(testProbs$Outcome)==FALSE,]$Outcome)
+f.perf<-performance(pred,"f")
+plot(f.perf)
+F.score <-c(f.perf@y.values[[1]])
+cutoff<-c(f.perf@x.values[[1]])
+F.score_table<-data.frame(cbind(F.score,cutoff))
+F.score_table[which.max(F.score_table$F.score),]
+# The best threshold is 0.325
+
+testProbs <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$Probs > 0.325 , 1, 0)))
+
+caret::confusionMatrix(testProbs$predOutcome, testProbs$Outcome, 
+                       positive = "1")
+
+pROC::auc(testProbs$Outcome, testProbs$Probs)
+# Area under the curve is 0.7572
+
+ggplot(testProbs, aes(d = as.numeric(testProbs$Outcome), m = Probs)) +
+  plotROC::geom_roc(n.cuts = 90, labels = FALSE, colour = "pink") +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey') +
+  labs(title = "ROC Curve")
+```
 
 
 # Findings
 ## Interpretation of predictors
-## Probabilities versus changes in key variables
+### OLS
+
+### Binomial
+```{r}
+exp(coef(binomialModel1)) 
+```
+
+## Probabilities versus changes in key variables for binomial
+
 ## Map of distribution of predicted outcome
+```{r}
+olsPredictions <-
+  predict(olsModel1, final_vars, type= "response")
+
+ols_map<-
+  cbind(dat_all,olsPredictions) %>%
+  mutate(olsPredictions=round(olsPredictions, 1))
+
+ggplot() + 
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), color = "grey", aes(fill = Total_Pop))+
+  scale_fill_gradient(low = "gray40",
+                      high = "gray5") +
+  geom_point(data=ols_map, aes(x=LONGITUDE, y = LATITUDE,
+                            colour=factor(ntile(olsPredictions,5))), size=0.2,) +
+  scale_color_manual(values = c("#edf8fb","#b3cde3","#8c96c6","#8856a7","#810f7c"),
+                    labels=as.character(quantile(ols_map$olsPredictions,
+                                               c(0.1,.2,.4,.6,.8),na.rm=T)),
+                    name="Predicted\nDaily\nCount") +
+  mapTheme()
+
+```
+
+
+```{r binomial outcome map}
+allPredictions <-
+  predict(binomialModel1, binomial_vars, type= "response")
+
+binomial_map<-
+  cbind(dat_all,allPredictions)%>%
+  mutate(allPredictions=round(allPredictions*100)) %>%
+  na.omit()
+
+ggplot() + 
+  geom_sf(data = SFTracts %>%
+            st_transform(crs="+proj=longlat +crs = 'EPSG:6339'"), color = "grey", aes(fill = Total_Pop))+
+  scale_fill_gradient(low = "gray40",
+                      high = "gray5") +
+  geom_point(data=binomial_map, aes(x=LONGITUDE, y = LATITUDE,
+                            colour=factor(ntile(allPredictions,5))), size=0.2,) +
+  scale_color_manual(values = c("#edf8fb","#b3cde3","#8c96c6","#8856a7","#810f7c"),
+                    labels=as.character(quantile(binomial_map$allPredictions,
+                                               c(0.1,.2,.4,.6,.8),na.rm=T)),
+                    name="Predicted\nProbabilities(%)\n(Quintile\nBreaks)") +
+  mapTheme()
+```
+
 
 # Discussion
 ## Planning implications
+The closer to touristy, special events areas (northeast SF) the lower the demand. This might suggest that the Smart Meters method is working in curbing the demand as the prices there are usually higher. 
+
+Demand for parking on Sunday is significantly lower.
+
 ## Next steps
+Build a model that take demand into account (predict parking availability as a percentage rather than count)
 
 
 
