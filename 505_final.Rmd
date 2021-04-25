@@ -44,6 +44,7 @@ library(plotROC)
 library(ROCR)
 library(pROC)
 
+
 plotTheme <- function(base_size = 12) {
   theme(
     text = element_text( color = "black"),
@@ -104,9 +105,9 @@ nn_function <- function(measureFrom,measureTo,k) {
 
 #Please save these line
 ## Gillian's working directory 
-setwd("G:/UPenn/CPLN505_PlaningByNumbers/Final Project/GillianParkingSF") 
+# setwd("G:/UPenn/CPLN505_PlaningByNumbers/Final Project/GillianParkingSF") 
 ## !!Bingchu's working directory!! 
-# setwd("D:/Upenn/CPLN505/final project")
+setwd("D:/Upenn/CPLN505/final project")
 ```
 
 # Data
@@ -343,6 +344,16 @@ dat_all <- dat_all %>%
 dat_all <- read.delim("dat_all_02.txt")
 ```
 
+## feature engineering
+```{r}
+dat_all$cat_age <- ifelse(dat_all$Med_Age <= 35.9, "1QU", ifelse(dat_all$Med_Age > 35.9 & dat_all$Med_Age <= 37.3, "2QU", ifelse(dat_all$Med_Age > 37.3 & dat_all$Med_Age <= 41.9, "3QU", "4QU"))) #categorize age
+  #  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  # 19.60   35.90   37.30   39.38   41.90   64.70 
+dat_all$cat_inc <- ifelse(dat_all$Med_Inc <= 63808, "1QU", ifelse(dat_all$Med_Inc > 63808 & dat_all$Med_Inc <= 98531, "2QU", ifelse(dat_all$Med_Inc > 98531 & dat_all$Med_Inc <= 141588, "3QU", "4QU"))) #categorize income
+  #  Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  # 12479   63808   98531   99825  141588  195000 
+```
+
 # Exploratory Analysis
 ## Distribution of parking posts
 Considered count by post by hour, but the distribution of data does not satisfy regression. 
@@ -428,7 +439,7 @@ park_exp.demographic <-
   dat_all %>%
   dplyr::select(pk_Count,
                 Total_Pop, Med_Inc, White_Pop, Med_Age,
-                Percent_White,
+                Percent_White, 
     -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
   gather(key,value, -pk_Count)
 
@@ -651,7 +662,7 @@ ggplot()+
 park_exp.cat <-
   dat_all %>%
   dplyr::select(pk_Count,
-                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, cultural, medical, management, #visitor #retail, 
+                ON_OFFSTREET_TYPE, Neighborhoods, Means_of_Transport, pdr, cultural, medical, management, cat_inc, cat_age,#visitor #retail, 
     -LONGITUDE, -LATITUDE, -geometry, -geometry.x, -geometry.y) %>%
   gather(key,value, -pk_Count)
 
@@ -695,21 +706,21 @@ final_vars <- dat_all %>%
           # school.nn, high cor with hist recours.nn
           # lights.nn, high cor with spc_events.nn
         Total_Pop, 
-        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
+        Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
         enforcement.nn, transitstop.nn, historic_resources.nn, nearby.nn,
         # categorical
           # retail, visitor, due to only one value
           # Means_of_Transport, due to too many categories
           # Neighborhoods, due to too many categories,
-        ON_OFFSTREET_TYPE, pdr, 
-        cultural, medical, management, dotw
+        ON_OFFSTREET_TYPE, pdr, cat_inc, cat_age, #Med_Age, 
+        cultural, medical, management, dotw#, lights.nn
          )
 
 final_numeric_vars <- dat_all %>%
   select(pk_Count,
          # continuous
         Total_Pop, 
-        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, #lights.nn
+        Percent_White, Percent_Taking_Public_Trans, spc_event.nn, #lights.nn,
         enforcement.nn, transitstop.nn, historic_resources.nn, nearby.nn)
 
 rcorr(as.matrix(final_numeric_vars[]), type = c("pearson"))
@@ -729,47 +740,44 @@ ggcorrplot(outline.col = "white", type = "lower",
 ### Initial Model
 #### OLS
 ```{r OLS no log}
-olsModel <- lm ( pk_Count ~ ., data = final_vars) 
+olsModel <- lm ( pk_Count ~ ., data = final_vars) #before cat 0.2405 #after cat 0.2493(i forgot to delete med-age the first time) Adjusted R-squared:  0.2484 
 summary(olsModel)
 
-olsModel <- lm ( pk_Count ~ ., data = final_vars) 
-summary(olsModel)
 ```
 
 ```{r log level}
-olsModel.loglevel <- lm ( log(pk_Count) ~ ., data = final_vars) 
+olsModel.loglevel <- lm ( log(pk_Count) ~ ., data = final_vars) #0.2119 before cat #0.222 after cat(now it's 0.22)
 summary(olsModel.loglevel)
 ```
 
 ```{r log logsome}
-final_vars <- dat_all %>%
-  select(pk_Count,
-         # continuous
-          # Med_Inc, due to high cor with total pop
-          # White_Pop, due to high cor with total pop
-          # Total_Public_Trans, due to high cor with total pop
-          # Mean_Commute_Time, due to high cor with % public transit
-          # college.nn, due to high cor with spc_event
-          # reg_business.nn, exactly the same as spe_event.nn
-          # reg_historical.nn, high cor with lights.nn & spc_event.nn
-          # school.nn, high cor with hist recours.nn
-        Total_Pop, 
-        Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
-        lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
-        # categorical
-          # retail, visitor, due to only one value
-          # Means_of_Transport, due to too many categories
-        ON_OFFSTREET_TYPE, Neighborhoods, pdr, 
-        cultural, medical, management, dotw
-         )
+# final_vars <- dat_all %>%
+#   select(pk_Count,
+#          # continuous
+#           # Med_Inc, due to high cor with total pop
+#           # White_Pop, due to high cor with total pop
+#           # Total_Public_Trans, due to high cor with total pop
+#           # Mean_Commute_Time, due to high cor with % public transit
+#           # college.nn, due to high cor with spc_event
+#           # reg_business.nn, exactly the same as spe_event.nn
+#           # reg_historical.nn, high cor with lights.nn & spc_event.nn
+#           # school.nn, high cor with hist recours.nn
+#         Total_Pop, 
+#         Med_Age, Percent_White, Percent_Taking_Public_Trans, spc_event.nn, 
+#         lights.nn, enforcement.nn, transitstop.nn, historic_resources.nn, 
+#         # categorical
+#           # retail, visitor, due to only one value
+#           # Means_of_Transport, due to too many categories
+#         ON_OFFSTREET_TYPE, pdr, #Neighborhoods, 
+#         cultural, medical, management, dotw, nearby.nn
+#          )
 
 final_vars.logsome <- final_vars %>%
-  mutate(log_Med_Age = log(Med_Age),
-         log_Percent_Taking_Public_Trans = log(Percent_Taking_Public_Trans)) %>%
-  select(-Med_Age, -Percent_Taking_Public_Trans)
+  mutate(log_Percent_Taking_Public_Trans = log(Percent_Taking_Public_Trans)) %>%
+  select(-Percent_Taking_Public_Trans)
   
 
-olsModel.loglog <- lm ( log(pk_Count) ~ ., data = final_vars.logsome) 
+olsModel.loglog <- lm ( log(pk_Count) ~ ., data = final_vars.logsome) #0.2122 before cat #0.2224 after cat (0.22)
 summary(olsModel.loglog)
 ```
 
@@ -781,18 +789,20 @@ binomial_vars <- final_vars %>%
 
 binomialModel <- glm(as.factor(highDemand) ~.,family = "binomial"(link="logit"),
                   data= binomial_vars)
-summary(binomialModel)
+summary(binomialModel) # AIC 174264 #Null deviance: 205298 #Residual deviance: 174220 #AFTER CAT AIC: 173080 (AIC: 173258) Residual deviance: 173026(173206)
 ```
+
 
 
 #### Backward selection and evaluation
 ```{r OLS backward}
 olsModel_backstep <- step( lm(formula = pk_Count ~ ., data = final_vars), direction="backward") #backward selection
 olsModel1 <- lm ( pk_Count ~ Total_Pop + Percent_White + Percent_Taking_Public_Trans + 
-    spc_event.nn + enforcement.nn + transitstop.nn + nearby.nn +
-    historic_resources.nn + ON_OFFSTREET_TYPE + 
-    cultural + medical + dotw, data = final_vars)  # got rid of pdr, management and med age
-# why got rid of med age though??
+    spc_event.nn + enforcement.nn + transitstop.nn + historic_resources.nn + 
+    nearby.nn + ON_OFFSTREET_TYPE + cat_inc + cat_age + cultural + 
+    medical + dotw, data = final_vars)  # got rid of management
+#Step:  AIC=4598.67
+#Step after cat: AIC=4598.67(AIC=4800.22) Adjusted R-squared:  0.2494 (0.2484)
 summary(olsModel1)
 
 car::vif(olsModel) 
@@ -800,9 +810,6 @@ car::vif(olsModel)
 sqrt(vif(olsModel))
 vif(olsModel1) 
 sqrt(vif(olsModel1))
-# The following comment from Bingchu is also resolved - all VIF values are fine
-# spc_event.nn                  6.833475 1.000000        2.614092
-# lights.nn                     5.598379 1.000000        2.366089
 
 stargazer(olsModel, olsModel1, type = "text", title = "multivariate models")
 # olsModel1 is the leanest and meanest
@@ -811,35 +818,39 @@ stargazer(olsModel, olsModel1, type = "text", title = "multivariate models")
 ```{r binomial backwards}
 step(binomialModel, direction="backward")
 
-# Got rid of lights.nn, pdr, management based on backward selection and drop1 functions
-binomialModel1 <- glm(formula = as.factor(highDemand) ~ Total_Pop + Med_Age + Percent_White + 
+# Got rid of pdr, management based on backward selection and drop1 functions
+binomialModel1 <- glm(formula = as.factor(highDemand) ~ Total_Pop + Percent_White + 
     Percent_Taking_Public_Trans + spc_event.nn + enforcement.nn + 
     transitstop.nn + historic_resources.nn + nearby.nn + ON_OFFSTREET_TYPE + 
-    cultural + medical + dotw, family = binomial(link = "logit"), 
+    cat_inc + cat_age + cultural + medical + dotw, family = binomial(link = "logit"), 
     data = binomial_vars)
 summary(binomialModel1)
+#     Null deviance: 205298  on 156522  degrees of freedom
+# Residual deviance: 173208  on 156499  degrees of freedom
+# AIC: 173256
+
 ```
 
 Interpretation: the model prediction does not fit the data well at 95% significance since the null and residual deviance are larger than the critical value. However, our final model was able to improve the null model by lowering the deviance to a value that is approximate the critical value.
 ```{r binomial eva}
 # for binomialModel
-qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
-                      # Residual deviance: 164510  on 156425  degrees of freedom
-                      # AIC: 164706
-qchisq(.95, df=156425)
+qchisq(.95, df=156522)         # Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
+#157443.4                      # Residual deviance: 173206  on 156497  degrees of freedom
+#157418.4                      # AIC: 173258
+
+qchisq(.95, df=156497)
 anova(binomialModel, test="Chisq")
 drop1(binomialModel, test="Chisq")
 
 # for binomialModel1
 qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
-                      # Residual deviance: 174674  on 156504  degrees of freedom
-                      # AIC: 164706
-qchisq(.95, df=156504) # 157425.4
-qchisq(.95, df=156522)# Null deviance: 205298  on 156522  degrees of freedom  #should go smaller
-                      # Residual deviance: 174674  on 156504  degrees of freedom
-                      # AIC: 164706
-anova(binomialModel, test="Chisq")
-drop1(binomialModel, test="Chisq")
+                      # Residual deviance: 173208 on 156499  degrees of freedom
+                      # AIC: 173256
+qchisq(.95, df=156499)
+# [1] 157443.4
+# [1] 157420.4
+anova(binomialModel1, test="Chisq")
+drop1(binomialModel1, test="Chisq")
 
 stargazer(binomialModel, binomialModel1, type = "text", title = "binomial models")
 # Interpretation: binomialModel1 is slightly better?
@@ -870,6 +881,7 @@ R-squared values and F-tests statistics help compare the models. r-squared tell 
 R-squared values: Both our base model and the final model has a adjusted r-squared (and r-squared) of 0.23. This further verifies that the final model has the most meaningful predictors.
 
 F-tests: The base model has a F value of  2264 and final model has a higher F value of 2640. Along with r-squared value, this signals our final model is the leanest model in predicting daily parking count for a parking meter.
+
 
 #### Confusion matrix and ROC curve
 ```{r}
@@ -975,6 +987,69 @@ ggplot() +
                          na.value = "transparent") +
   mapTheme()
 ```
+
+#### MAE 
+
+```{r do_predicitons}
+meter.dotwNest <- 
+  dat_all %>%
+  nest(-dotw) 
+
+model_pred <- function(data, fit){
+   pred <- predict(fit, newdata = data)}
+
+dotw_predictions <- 
+  dat_all %>% 
+    mutate(olsmodel = map(.x = data, fit = olsModel1, .f = model_pred)) %>% 
+    gather(Regression, Prediction, -data) %>%
+    mutate(Observed = map(data, pull, pk_Count),
+           Absolute_Error = map2(Observed, Prediction,  ~ abs(.x - .y)),
+           MAE = map_dbl(Absolute_Error, mean, na.rm = TRUE),
+           sd_AE = map_dbl(Absolute_Error, sd, na.rm = TRUE))
+```
+
+```{r error_vs_actual_timeseries, cache = TRUE, warning = FALSE, message = FALSE}
+dotw_predictions %>% 
+    mutate(dotw= map(data, pull, dotw),
+           POST_ID = map(data, pull, POST_ID)) %>%
+    dplyr::select(dotw, POST_ID, Observed, Prediction, Regression) %>%
+    unnest() %>%
+    gather(Variable, Value, -Regression, -dotw, -POST_ID) %>%
+    group_by(Regression, Variable, dotw) %>%
+    summarize(Value = sum(Value)) %>%
+    ggplot(aes(dotw, Value, colour=Variable)) + 
+      geom_line(size = 1.1) + 
+      facet_wrap(~Regression, ncol=1) +
+      labs(title = "Figure 5.2: Predicted/Observed parking demands time series", x = "dotw", y= "Meter Locations") +
+      plotTheme
+```
+
+
+```{r errors_by_station, warning = FALSE, message = FALSE, cache = TRUE}
+dotw_predictions %>% 
+    mutate(dotw = map(data, pull, dotw),
+           POST_ID = map(data, pull, POST_ID), 
+           LATITUDE = map(data, pull, LATITUDE), 
+           LONGITUDE = map(data, pull, LONGITUDE)) %>%
+    dplyr::select(dotw, POST_ID, LONGITUDE, LATITUDE, Observed, Prediction, Regression) %>%
+    unnest() %>%
+  #filter(Regression == "DTime_Space_FE_timeLags") %>% ##regresstion
+  group_by(POST_ID, LONGITUDE, LATITUDE) %>%
+  summarize(MAE = mean(abs(Observed-Prediction), na.rm = TRUE))%>%
+ggplot(.)+
+  geom_sf(data = (SFTracts%>%
+    st_transform(st_crs(6339))), color = "grey", fill = "transparent")+
+  geom_point(aes(x = LONGITUDE, y = LATITUDE, color = MAE), 
+             fill = "transparent", alpha = 0.4)+
+  scale_colour_viridis(direction = -1,
+  discrete = FALSE, option = "D")+
+  ylim(min(dat_census$LATITUDE), max(dat_census$LATITUDE))+
+  xlim(min(dat_census$LONGITUDE), max(dat_census$LONGITUDE))+
+  labs(title="Figure 5.3: Mean Abs Error, Test Set, Model 4")+
+  mapTheme
+```
+
+####
 
 
 # Discussion
